@@ -7,40 +7,38 @@
     <style>
         :root { --gold: #f1c40f; --green: #27ae60; --red: #c0392b; }
         body { font-family: sans-serif; background: #1a472a; color: white; margin: 0; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
-        
-        /* LOBBY */
-        #lobby-screen { position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 10000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-        
-        /* HEADER */
+        #lobby-screen { position: fixed; inset: 0; background: rgba(0,0,0,0.98); z-index: 10000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .header { background: rgba(0,0,0,0.9); padding: 10px; border-bottom: 3px solid var(--green); display: flex; justify-content: space-between; align-items: center; height: 75px; }
-        .wallet-unit { font-size: 1.4rem; color: var(--gold); font-weight: bold; }
-        .straddle-banner { background: var(--gold); color: black; display: none; align-items: center; padding: 5px 15px; border-radius: 5px; font-weight: bold; gap: 10px; }
-        
-        /* ARENA */
         .arena { display: flex; flex: 1; padding: 10px; gap: 10px; overflow: hidden; }
         .col { flex: 1; background: rgba(0,0,0,0.2); border-radius: 12px; border: 1px solid #444; display: flex; flex-direction: column; padding: 10px; }
         .my-col { border-color: var(--gold); background: rgba(241, 196, 15, 0.1); }
         .set-row { flex: 1; display: flex; align-items: center; justify-content: center; border: 1px dashed rgba(255,255,255,0.1); margin: 1px; border-radius: 6px; min-height: 60px; }
-        .winner-glow { background: rgba(241, 196, 15, 0.3) !important; border: 2px solid var(--gold) !important; box-shadow: 0 0 15px var(--gold); }
-        
-        /* CARDS & POPUPS */
         .card { width: 75px; height: 105px; background: white; border-radius: 5px; cursor: grab; z-index: 100; }
         .card img { width: 100%; height: 100%; pointer-events: none; border-radius: 5px; }
         .card-sm { width: 42px; height: 60px; }
-        #summary-popup { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.98); border: 3px solid var(--gold); padding: 25px; border-radius: 15px; z-index: 1100; width: 400px; }
+        .winner-glow { background: rgba(241, 196, 15, 0.3) !important; border: 2px solid var(--gold) !important; box-shadow: 0 0 15px var(--gold); }
         .tray { background: rgba(0,0,0,0.6); min-height: 125px; display: flex; justify-content: center; align-items: center; gap: 6px; border-top: 2px solid var(--green); padding: 10px; }
         .locked { pointer-events: none; opacity: 0.8; }
         button { padding: 10px 20px; font-weight: bold; cursor: pointer; border-radius: 5px; border: none; background: var(--green); color: white; }
+        #force-btn { background: #555; font-size: 0.8rem; margin-top: 10px; display: none; }
+        #summary-popup { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.98); border: 3px solid var(--gold); padding: 25px; border-radius: 15px; z-index: 1100; width: 400px; }
     </style>
 </head>
 <body>
-    <div id="lobby-screen"><h1>Lobby</h1><p id="player-count">Connecting...</p><h2 id="role-tag" style="color:var(--gold)"></h2></div>
+    <div id="lobby-screen">
+        <h1>Lobby</h1>
+        <p id="player-count">Connecting...</p>
+        <h2 id="role-tag" style="color:var(--gold)"></h2>
+        <button id="force-btn" onclick="socket.emit('force_showdown')">⚠️ FORCE START</button>
+    </div>
     
     <div id="summary-popup"><h2>Hand Results</h2><div id="log-list" style="max-height:180px; overflow-y:auto; background:#111; padding:10px; font-family:monospace; font-size:0.8rem;"></div><button onclick="socket.emit('start_game')" style="margin-top:15px; width:100%;">DEAL NEXT HAND</button></div>
 
     <div class="header">
-        <div id="wallets" class="wallet-unit">Connecting...</div>
-        <div id="straddle-box" class="straddle-banner">STRADDLE: <div id="s-img" style="width:30px; height:45px; background:white; border-radius:3px; overflow:hidden;"></div> <span id="s-holder"></span></div>
+        <div id="wallets" style="font-size:1.4rem; font-weight:bold; color:var(--gold);">Connecting...</div>
+        <div id="straddle-box" style="background:var(--gold); color:black; display:none; align-items:center; padding:5px 15px; border-radius:5px; font-weight:bold; gap:10px;">
+            STRADDLE: <div id="s-img" style="width:30px; height:45px; background:white; border-radius:3px; overflow:hidden;"></div> <span id="s-holder"></span>
+        </div>
         <div class="btns">
             <button id="deal-btn" style="display:none;" onclick="socket.emit('start_game')">DEAL HAND</button>
             <button id="sub-btn" style="display:none; background:var(--red);" onclick="submitSets()">SUBMIT SETS</button>
@@ -56,8 +54,7 @@
     <div class="tray" id="tray" ondrop="dropToTray(event)" ondragover="allow(event)"></div>
 
     <script>
-        // CLOUD FIX: Use WebSocket transport specifically to stop polling loops
-        var socket = io({ transports: ['websocket'] });
+        var socket = io({ transports: ['websocket'] }); // Force websocket to stop loops
         var myRole = "", mySets = {r1:[],r2:[],r3:[],r4:[],r5:[]}, gameData = null, roundNum = 0, currentStraddle = {};
 
         function getI(c) { 
@@ -65,17 +62,23 @@
             return `https://deckofcardsapi.com/static/img/${(r==='10'?'0':r)}${m[c.slice(-1)]}.png`; 
         }
 
+        socket.on('force_refresh', () => { window.location.reload(); });
+
         socket.on('assign_role', data => {
             myRole = data.role; document.getElementById('role-tag').innerText = "Role: " + myRole;
-            if(myRole === "Afghound") document.getElementById('deal-btn').style.display = "block";
+            if(myRole === "Afghound") {
+                document.getElementById('deal-btn').style.display = "block";
+                document.getElementById('force-btn').style.display = "block"; // Show emergency button
+            }
             document.getElementById('name-l').innerText = (myRole === "Afghound") ? "Player 2" : "Afghound";
             document.getElementById('name-r').innerText = (myRole === "Player 3") ? "Player 2" : "Player 3";
             updateWallets(data.wallets);
         });
 
         socket.on('lobby_update', data => {
-            document.getElementById('player-count').innerText = data.count + " / 3 Players Joined";
-            if(data.count === 3) document.getElementById('lobby-screen').style.display = "none";
+            document.getElementById('player-count').innerText = `${data.count} Connected: ${data.players.join(', ')}`;
+            // Auto-hide lobby if we have at least 2 players so you can start testing
+            if(data.count >= 2) document.getElementById('lobby-screen').style.display = "none";
         });
 
         socket.on('deal_cards', data => {
@@ -86,6 +89,7 @@
             document.getElementById('s-img').innerHTML = `<img src="${getI(data.straddle)}" width="100%">`;
             document.getElementById('s-holder').innerText = `(${data.holder})`;
             currentStraddle = {card: data.straddle, holder: data.holder};
+            
             let tray = document.getElementById('tray'); tray.innerHTML = "";
             data.hand.forEach((c, i) => {
                 let d = document.createElement('div'); d.className='card'; d.id='card-'+i; d.draggable=true;
@@ -120,7 +124,12 @@
             document.getElementById('tray').innerHTML = "<h2>Waiting for others...</h2>";
         }
 
-        socket.on('status_update', data => { if(document.getElementById('sub-btn').style.display === "none") document.getElementById('tray').innerHTML = `<h2>Players Ready: ${data.ready_count} / 3</h2>`; });
+        socket.on('status_update', data => { 
+            // Better feedback: shows exactly how many players needed
+            if(document.getElementById('sub-btn').style.display === "none") {
+                document.getElementById('tray').innerHTML = `<h2>Players Ready: ${data.ready_count} / ${data.total_needed}</h2>`; 
+            }
+        });
         
         socket.on('showdown_ready', data => {
             gameData = data; roundNum = 0; document.getElementById('tray').innerHTML = "<h3>Showdown Ready!</h3>";
@@ -133,10 +142,22 @@
                 document.getElementById('log-list').innerHTML = gameData.logs.join('<br>'); updateWallets(gameData.wallets); return;
             }
             let r = roundNum + 1, left = (myRole === "Afghound") ? "Player 2" : "Afghound", right = (myRole === "Player 3") ? "Player 2" : "Player 3";
-            flip('afg-r'+r, gameData.sets[myRole][roundNum]); flip('l-r'+r, gameData.sets[left][roundNum]); flip('r-r'+r, gameData.sets[right][roundNum]);
-            let winLine = gameData.logs.find(l => l.includes(`ROUND ${r} WINNER`)), winner = winLine.split(': ')[1];
-            let id = (winner === myRole ? 'afg-r' : (winner === left ? 'l-r' : 'r-r')) + r;
-            document.getElementById(id).classList.add('winner-glow'); roundNum++;
+            
+            // Check if player data exists before flipping to avoid crashes
+            let myCards = gameData.sets[myRole] ? gameData.sets[myRole][roundNum] : [];
+            let leftCards = gameData.sets[left] ? gameData.sets[left][roundNum] : [];
+            let rightCards = gameData.sets[right] ? gameData.sets[right][roundNum] : [];
+
+            flip('afg-r'+r, myCards); flip('l-r'+r, leftCards); flip('r-r'+r, rightCards);
+            
+            let winLine = gameData.logs.find(l => l.includes(`ROUND ${r} WINNER`));
+            if(winLine) {
+                let winner = winLine.split(': ')[1];
+                let id = (winner === myRole ? 'afg-r' : (winner === left ? 'l-r' : 'r-r')) + r;
+                let target = document.getElementById(id);
+                if(target) target.classList.add('winner-glow');
+            }
+            roundNum++;
         });
 
         function flip(id, cards) { document.getElementById(id).innerHTML = cards.map(c => `<img src="${getI(c)}" class="card-sm">`).join(''); }
