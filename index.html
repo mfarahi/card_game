@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Afghound Multiplayer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        :root { --gold: #f1c40f; --green: #27ae60; --red: #c0392b; }
+        body { font-family: sans-serif; background: #1a472a; color: white; margin: 0; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+        #lobby-screen { position: fixed; inset: 0; background: rgba(0,0,0,0.98); z-index: 10000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .header { background: rgba(0,0,0,0.9); padding: 10px; border-bottom: 3px solid var(--green); display: flex; justify-content: space-between; align-items: center; height: 75px; }
+        .arena { display: flex; flex: 1; padding: 10px; gap: 10px; overflow: hidden; }
+        .col { flex: 1; background: rgba(0,0,0,0.2); border-radius: 12px; border: 1px solid #444; display: flex; flex-direction: column; padding: 10px; }
+        .my-col { border-color: var(--gold); background: rgba(241, 196, 15, 0.1); }
+        .set-row { flex: 1; display: flex; align-items: center; justify-content: center; border: 1px dashed rgba(255,255,255,0.1); margin: 1px; border-radius: 6px; min-height: 60px; }
+        .card { width: 75px; height: 105px; background: white; border-radius: 5px; cursor: grab; z-index: 100; }
+        .card img { width: 100%; height: 100%; pointer-events: none; border-radius: 5px; }
+        .card-sm { width: 42px; height: 60px; }
+        .winner-glow { background: rgba(241, 196, 15, 0.3) !important; border: 2px solid var(--gold) !important; box-shadow: 0 0 15px var(--gold); }
+        .tray { background: rgba(0,0,0,0.6); min-height: 125px; display: flex; justify-content: center; align-items: center; gap: 6px; border-top: 2px solid var(--green); padding: 10px; }
+        .locked { pointer-events: none; opacity: 0.8; }
+        button { padding: 10px 20px; font-weight: bold; cursor: pointer; border-radius: 5px; border: none; background: var(--green); color: white; }
+        #force-btn { background: #555; font-size: 0.8rem; margin-top: 10px; display: none; }
+        #summary-popup { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.98); border: 3px solid var(--gold); padding: 25px; border-radius: 15px; z-index: 1100; width: 400px; }
+    </style>
+</head>
+<body>
+    <div id="lobby-screen">
+        <h1>Lobby</h1>
+        <p id="player-count">Connecting...</p>
+        <h2 id="role-tag" style="color:var(--gold)"></h2>
+        <button id="force-btn" onclick="socket.emit('force_showdown')">⚠️ FORCE START</button>
+    </div>
+    
+    <div id="summary-popup"><h2>Hand Results</h2><div id="log-list" style="max-height:180px; overflow-y:auto; background:#111; padding:10px; font-family:monospace; font-size:0.8rem;"></div><button onclick="socket.emit('start_game')" style="margin-top:15px; width:100%;">DEAL NEXT HAND</button></div>
+
+    <div class="header">
+        <div id="wallets" style="font-size:1.4rem; font-weight:bold; color:var(--gold);">Connecting...</div>
+        <div id="straddle-box" style="background:var(--gold); color:black; display:none; align-items:center; padding:5px 15px; border-radius:5px; font-weight:bold; gap:10px;">
+            STRADDLE: <div id="s-img" style="width:30px; height:45px; background:white; border-radius:3px; overflow:hidden;"></div> <span id="s-holder"></span>
+        </div>
+        <div class="btns">
+            <button id="deal-btn" style="display:none;" onclick="socket.emit('start_game')">DEAL HAND</button>
+            <button id="sub-btn" style="display:none; background:var(--red);" onclick="submitSets()">SUBMIT SETS</button>
+            <button id="next-btn" style="display:none; background:var(--gold); color:black;" onclick="socket.emit('next_round_trigger')">NEXT ROUND ➜</button>
+        </div>
+    </div>
+
+    <div class="arena">
+        <div class="col"><h3 id="name-l">Player</h3><div id="l-r1" class="set-row"></div><div id="l-r2" class="set-row"></div><div id="l-r3" class="set-row"></div><div id="l-r4" class="set-row"></div><div id="l-r5" class="set-row"></div></div>
+        <div class="col my-col" id="main-arena"><h3>YOU</h3><div id="afg-r1" class="set-row" ondrop="drop(event)" ondragover="allow(event)"></div><div id="afg-r2" class="set-row" ondrop="drop(event)" ondragover="allow(event)"></div><div id="afg-r3" class="set-row" ondrop="drop(event)" ondragover="allow(event)"></div><div id="afg-r4" class="set-row" ondrop="drop(event)" ondragover="allow(event)"></div><div id="afg-r5" class="set-row" ondrop="drop(event)" ondragover="allow(event)"></div></div>
+        <div class="col"><h3 id="name-r">Player</h3><div id="r-r1" class="set-row"></div><div id="r-r2" class="set-row"></div><div id="r-r3" class="set-row"></div><div id="r-r4" class="set-row"></div><div id="r-r5" class="set-row"></div></div>
+    </div>
+    <div class="tray" id="tray" ondrop="dropToTray(event)" ondragover="allow(event)"></div>
+
+    <script>
+        var socket = io({ transports: ['websocket'] }); // Force websocket to stop loops
+        var myRole = "", mySets = {r1:[],r2:[],r3:[],r4:[],r5:[]}, gameData = null, roundNum = 0, currentStraddle = {};
+
+        function getI(c) { 
+            const m = {'♠':'S','♥':'H','♦':'D','♣':'C'}; let r = c.slice(0,-1);
+            return `https://deckofcardsapi.com/static/img/${(r==='10'?'0':r)}${m[c.slice(-1)]}.png`; 
+        }
+
+        socket.on('force_refresh', () => { window.location.reload(); });
+
+        socket.on('assign_role', data => {
+            myRole = data.role; document.getElementById('role-tag').innerText = "Role: " + myRole;
+            if(myRole === "Afghound") {
+                document.getElementById('deal-btn').style.display = "block";
+                document.getElementById('force-btn').style.display = "block"; // Show emergency button
+            }
+            document.getElementById('name-l').innerText = (myRole === "Afghound") ? "Player 2" : "Afghound";
+            document.getElementById('name-r').innerText = (myRole === "Player 3") ? "Player 2" : "Player 3";
+            updateWallets(data.wallets);
+        });
+
+        socket.on('lobby_update', data => {
+            document.getElementById('player-count').innerText = `${data.count} Connected: ${data.players.join(', ')}`;
+            // Auto-hide lobby if we have at least 2 players so you can start testing
+            if(data.count >= 2) document.getElementById('lobby-screen').style.display = "none";
+        });
+
+        socket.on('deal_cards', data => {
+            updateWallets(data.wallets); 
+            document.getElementById('main-arena').classList.remove('locked');
+            document.getElementById('summary-popup').style.display = "none";
+            document.getElementById('straddle-box').style.display = "flex";
+            document.getElementById('s-img').innerHTML = `<img src="${getI(data.straddle)}" width="100%">`;
+            document.getElementById('s-holder').innerText = `(${data.holder})`;
+            currentStraddle = {card: data.straddle, holder: data.holder};
+            
+            let tray = document.getElementById('tray'); tray.innerHTML = "";
+            data.hand.forEach((c, i) => {
+                let d = document.createElement('div'); d.className='card'; d.id='card-'+i; d.draggable=true;
+                d.setAttribute('data-c', c); d.innerHTML = `<img src="${getI(c)}">`;
+                d.ondragstart = e => e.dataTransfer.setData("text", e.target.id); tray.appendChild(d);
+            });
+            mySets = {r1:[],r2:[],r3:[],r4:[],r5:[]};
+            document.querySelectorAll('.set-row').forEach(s => { s.innerHTML = ""; s.classList.remove('winner-glow'); });
+        });
+
+        function allow(ev) { ev.preventDefault(); }
+        function drop(ev) {
+            ev.preventDefault(); ev.stopPropagation(); 
+            let id = ev.dataTransfer.getData("text"), el = document.getElementById(id), row = ev.currentTarget.id.split('-')[1];
+            if (el && mySets[row].length < 3) {
+                removeFromSets(el.getAttribute('data-c')); mySets[row].push(el.getAttribute('data-c'));
+                el.className = 'card card-sm'; ev.currentTarget.appendChild(el); checkReady();
+            }
+        }
+        function dropToTray(ev) {
+            ev.preventDefault(); ev.stopPropagation();
+            let id = ev.dataTransfer.getData("text"), el = document.getElementById(id);
+            if (el) { removeFromSets(el.getAttribute('data-c')); el.className = 'card'; document.getElementById('tray').appendChild(el); checkReady(); }
+        }
+        function removeFromSets(c) { for (let r in mySets) mySets[r] = mySets[r].filter(card => card !== c); }
+        function checkReady() { let t = 0; for(let r in mySets) t += mySets[r].length; document.getElementById('sub-btn').style.display = (t===15) ? "block" : "none"; }
+
+        function submitSets() {
+            socket.emit('submit_sets', { sets: [mySets.r1, mySets.r2, mySets.r3, mySets.r4, mySets.r5], straddle: currentStraddle.card, holder: currentStraddle.holder });
+            document.getElementById('sub-btn').style.display = "none";
+            document.getElementById('main-arena').classList.add('locked');
+            document.getElementById('tray').innerHTML = "<h2>Waiting for others...</h2>";
+        }
+
+        socket.on('status_update', data => { 
+            // Better feedback: shows exactly how many players needed
+            if(document.getElementById('sub-btn').style.display === "none") {
+                document.getElementById('tray').innerHTML = `<h2>Players Ready: ${data.ready_count} / ${data.total_needed}</h2>`; 
+            }
+        });
+        
+        socket.on('showdown_ready', data => {
+            gameData = data; roundNum = 0; document.getElementById('tray').innerHTML = "<h3>Showdown Ready!</h3>";
+            if(myRole === "Afghound") document.getElementById('next-btn').style.display = "block";
+        });
+
+        socket.on('flip_next_row', () => {
+            if (roundNum >= 5) {
+                document.getElementById('next-btn').style.display = "none"; document.getElementById('summary-popup').style.display = "block";
+                document.getElementById('log-list').innerHTML = gameData.logs.join('<br>'); updateWallets(gameData.wallets); return;
+            }
+            let r = roundNum + 1, left = (myRole === "Afghound") ? "Player 2" : "Afghound", right = (myRole === "Player 3") ? "Player 2" : "Player 3";
+            
+            // Check if player data exists before flipping to avoid crashes
+            let myCards = gameData.sets[myRole] ? gameData.sets[myRole][roundNum] : [];
+            let leftCards = gameData.sets[left] ? gameData.sets[left][roundNum] : [];
+            let rightCards = gameData.sets[right] ? gameData.sets[right][roundNum] : [];
+
+            flip('afg-r'+r, myCards); flip('l-r'+r, leftCards); flip('r-r'+r, rightCards);
+            
+            let winLine = gameData.logs.find(l => l.includes(`ROUND ${r} WINNER`));
+            if(winLine) {
+                let winner = winLine.split(': ')[1];
+                let id = (winner === myRole ? 'afg-r' : (winner === left ? 'l-r' : 'r-r')) + r;
+                let target = document.getElementById(id);
+                if(target) target.classList.add('winner-glow');
+            }
+            roundNum++;
+        });
+
+        function flip(id, cards) { document.getElementById(id).innerHTML = cards.map(c => `<img src="${getI(c)}" class="card-sm">`).join(''); }
+        function updateWallets(w) { document.getElementById('wallets').innerText = `Afg: $${w.Afghound} | P2: $${w["Player 2"]} | P3: $${w["Player 3"]}`; }
+    </script>
+</body>
+</html>
